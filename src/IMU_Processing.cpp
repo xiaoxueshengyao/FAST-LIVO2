@@ -277,10 +277,11 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_
   // IMUpose.clear();
 
   /*** forward propagation at each imu point ***/
+  // 初始化imu位姿
   V3D acc_imu(acc_s_last), angvel_avr(angvel_last), acc_avr, vel_imu(state_inout.vel_end), pos_imu(state_inout.pos_end);
   // cout << "[ IMU ] input state: " << state_inout.vel_end.transpose() << " " << state_inout.pos_end.transpose() << endl;
   M3D R_imu(state_inout.rot_end);
-  MD(DIM_STATE, DIM_STATE) F_x, cov_w;
+  MD(DIM_STATE, DIM_STATE) F_x, cov_w; //状态转移矩阵和协方差矩阵
   double dt, dt_all = 0.0;
   double offs_t;
   // double imu_time;
@@ -289,12 +290,12 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_
   {
     // imu_time = v_imu.front()->header.stamp.toSec() - first_lidar_time;
     // tau = 1.0 / (0.25 * sin(2 * CV_PI * 0.5 * imu_time) + 0.75);
-    tau = 1.0;
+    tau = 1.0; 
     imu_time_init = true;
   }
   else
   {
-    tau = state_inout.inv_expo_time;
+    tau = state_inout.inv_expo_time; //逆曝光时间
     // ROS_ERROR("tau: %.6f !!!!!!", tau);
   }
   // state_inout.cov(6, 6) = 0.01;
@@ -308,6 +309,7 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_
     dt = 0;
     for (int i = 0; i < v_imu.size() - 1; i++)
     {
+      // 中值积分计算imu传播
       auto head = v_imu[i];
       auto tail = v_imu[i + 1];
 
@@ -334,6 +336,7 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_
       angvel_avr -= state_inout.bias_g;
       acc_avr = acc_avr * G_m_s2 / mean_acc.norm() - state_inout.bias_a;
 
+      // 计算dt  时间间隔
       if (head->header.stamp.toSec() < prop_beg_time)
       {
         // printf("00 \n");
@@ -358,29 +361,31 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_
 
       /* covariance propagation */
       M3D acc_avr_skew;
-      M3D Exp_f = Exp(angvel_avr, dt);
-      acc_avr_skew << SKEW_SYM_MATRX(acc_avr);
+      M3D Exp_f = Exp(angvel_avr, dt);  //角速度×时间  获得角度变化量
+      acc_avr_skew << SKEW_SYM_MATRX(acc_avr); //加速度反对称阵
 
       F_x.setIdentity();
       cov_w.setZero();
 
-      F_x.block<3, 3>(0, 0) = Exp(angvel_avr, -dt);
-      if (ba_bg_est_en) F_x.block<3, 3>(0, 10) = -Eye3d * dt;
+      // 状态转移矩阵赋值
+      F_x.block<3, 3>(0, 0) = Exp(angvel_avr, -dt); // 旋转
+      if (ba_bg_est_en) F_x.block<3, 3>(0, 10) = -Eye3d * dt; // bias部分
       // F_x.block<3,3>(3,0)  = R_imu * off_vel_skew * dt;
-      F_x.block<3, 3>(3, 7) = Eye3d * dt;
-      F_x.block<3, 3>(7, 0) = -R_imu * acc_avr_skew * dt;
+      F_x.block<3, 3>(3, 7) = Eye3d * dt; //加速度
+      F_x.block<3, 3>(7, 0) = -R_imu * acc_avr_skew * dt; // 加速度
       if (ba_bg_est_en) F_x.block<3, 3>(7, 13) = -R_imu * dt;
       if (gravity_est_en) F_x.block<3, 3>(7, 16) = Eye3d * dt;
 
       // tau = 1.0 / (0.25 * sin(2 * CV_PI * 0.5 * imu_time) + 0.75);
       // F_x(6,6) = 0.25 * 2 * CV_PI * 0.5 * cos(2 * CV_PI * 0.5 * imu_time) * (-tau*tau); F_x(18,18) = 0.00001;
-      if (exposure_estimate_en) cov_w(6, 6) = cov_inv_expo * dt * dt;
+      // 噪声设置,协方差
+      if (exposure_estimate_en) cov_w(6, 6) = cov_inv_expo * dt * dt; 
       cov_w.block<3, 3>(0, 0).diagonal() = cov_gyr * dt * dt;
       cov_w.block<3, 3>(7, 7) = R_imu * cov_acc.asDiagonal() * R_imu.transpose() * dt * dt;
       cov_w.block<3, 3>(10, 10).diagonal() = cov_bias_gyr * dt * dt; // bias gyro covariance
       cov_w.block<3, 3>(13, 13).diagonal() = cov_bias_acc * dt * dt; // bias acc covariance
 
-      state_inout.cov = F_x * state_inout.cov * F_x.transpose() + cov_w;
+      state_inout.cov = F_x * state_inout.cov * F_x.transpose() + cov_w;  //F P F^T + W
       // state_inout.cov.block<18,18>(0,0) = F_x.block<18,18>(0,0) *
       // state_inout.cov.block<18,18>(0,0) * F_x.block<18,18>(0,0).transpose() +
       // cov_w.block<18,18>(0,0);
@@ -391,6 +396,7 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_
       // tau = 1.0 / (0.25 * sin(2 * CV_PI * 0.5 * imu_time) + 0.75);
 
       /* propogation of IMU attitude */
+      // imu姿态传播  R  acc pos vel 
       R_imu = R_imu * Exp_f;
 
       /* Specific acceleration (global frame) of IMU */
@@ -409,11 +415,14 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_
       // cout<<setw(20)<<"offset_t: "<<offs_t<<"tail->header.stamp.toSec():
       // "<<tail->header.stamp.toSec()<<endl; printf("[ LIO Propagation ]
       // offs_t: %lf \n", offs_t);
-      IMUpose.push_back(set_pose6d(offs_t, acc_imu, angvel_avr, vel_imu, pos_imu, R_imu));
+      IMUpose.push_back(set_pose6d(offs_t, acc_imu, angvel_avr, vel_imu, pos_imu, R_imu));// 保存IMU位姿
     }
 
     // unbiased_gyr = V3D(IMUpose.back().gyr[0], IMUpose.back().gyr[1], IMUpose.back().gyr[2]);
     // cout<<"prop end - start: "<<prop_end_time - prop_beg_time<<" dt_all: "<<dt_all<<endl;
+    // 所以lio的更新时间是在imu传播完成后更新的, 
+    // 前面赋值时,如果lio状态, prop_end_time = lio_time, 这个其实是获得的image的时间
+    // 说明了处理的点云时两帧image中间的点云,完成后再做vio
     lidar_meas.last_lio_update_time = prop_end_time;
     // dt = prop_end_time - imu_end_time;
     // printf("[ LIO Propagation ] dt: %lf \n", dt);
@@ -473,6 +482,7 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_
 
   /*** undistort each lidar point (backward propagation), ONLY working for LIO
    * update ***/
+  // 这里反向传播,对激光点去畸变
   if (lidar_meas.lio_vio_flg == LIO)
   {
     auto it_pcl = pcl_wait_proc.points.end() - 1;
@@ -522,6 +532,7 @@ void ImuProcess::UndistortPcl(LidarMeasureGroup &lidar_meas, StatesGroup &state_
   // printf("[ IMU ] time forward: %lf, backward: %lf.\n", t1 - t0, omp_get_wtime() - t1);
 }
 
+// 和前作类似,前向传播状态,反向传播去畸变
 void ImuProcess::Process2(LidarMeasureGroup &lidar_meas, StatesGroup &stat, PointCloudXYZI::Ptr cur_pcl_un_)
 {
   double t1, t2, t3;
@@ -529,6 +540,7 @@ void ImuProcess::Process2(LidarMeasureGroup &lidar_meas, StatesGroup &stat, Poin
   ROS_ASSERT(lidar_meas.lidar != nullptr);
   if (!imu_en)
   {
+    //不使用imu时的位姿传播, ekf预测
     Forward_without_imu(lidar_meas, stat, *cur_pcl_un_);
     return;
   }
@@ -542,6 +554,7 @@ void ImuProcess::Process2(LidarMeasureGroup &lidar_meas, StatesGroup &stat, Poin
 
     if (meas.imu.empty()) { return; };
     /// The very first lidar frame
+    // imu初始化,重力方向
     IMU_init(meas, stat, init_iter_num);
 
     imu_need_init = true;
